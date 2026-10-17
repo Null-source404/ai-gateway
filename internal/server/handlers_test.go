@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/john/ai-gateway/internal/provider"
+	"github.com/annoying-octopus/ai-gateway/internal/provider"
 )
 
 func TestNewServer_HealthzAndChat(t *testing.T) {

@@ -1,4 +1,4 @@
 // 
-module github.com/john/ai-gateway
+module github.com/annoying-octopus/ai-gateway
 
 go 1.22

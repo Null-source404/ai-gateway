@@ -5,9 +5,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/john/ai-gateway/internal/config"
-	"github.com/john/ai-gateway/internal/provider"
-	"github.com/john/ai-gateway/internal/server"
+	"github.com/annoying-octopus/ai-gateway/internal/config"
+	"github.com/annoying-octopus/ai-gateway/internal/provider"
+	"github.com/annoying-octopus/ai-gateway/internal/server"
 )
 
 func main() {

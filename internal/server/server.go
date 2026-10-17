@@ -4,7 +4,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/john/ai-gateway/internal/provider"
+	"github.com/annoying-octopus/ai-gateway/internal/provider"
 )
 
 func NewServer(p provider.Provider, apiKey string, ratePerMin int) *http.ServeMux {

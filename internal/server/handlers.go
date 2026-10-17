@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/john/ai-gateway/internal/provider"
+	"github.com/annoying-octopus/ai-gateway/internal/provider"
 )
 
 type Handler struct {

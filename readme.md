@@ -1,181 +1,197 @@
-# ai-gateway
+# AI Gateway
 
-A small, self-hosted **AI gateway written in Go**. Your apps send requests to *one* endpoint on your own server. The gateway checks who is calling, applies limits, forwards the request to an AI provider (Anthropic, an OpenAI-compatible API, a local Ollama model, or a built-in mock), and logs what happened.
+This is a small Go HTTP service that gives applications one local endpoint for chat
+requests. It checks a shared gateway bearer key, applies an in-memory request
+limit, and sends the request to either a built-in mock or an
+OpenAI-compatible provider such as Ollama.
 
-> **Status: planning.** No code yet. This README is the plan: what it is, why, how we will use it, what we will build in what order, and what you need installed.
+This is a personal learning/prototype project, not a production-ready gateway.
+It currently uses one shared API key and a process-local limiter; it does not
+provide user management, streaming, billing, or durable metrics.
 
----
+## What it does
 
-## 1. What it is
+The gateway accepts a small chat request format and returns its own response
+format. Provider-specific request/response translation lives behind the
+`provider.Provider` interface.
 
-Without a gateway, every app you build talks to an AI provider directly:
+Current behavior:
 
+- `GET /healthz` returns a basic health response.
+- `POST /v1/chat` checks `Authorization: Bearer <gateway-key>`, then forwards
+  the chat request to the selected provider.
+- `GATEWAY_PROVIDER=mock` uses a deterministic mock and needs no network or AI
+  credentials.
+- `GATEWAY_PROVIDER=openai` or `ollama` uses the OpenAI-compatible adapter
+  configured by `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `GATEWAY_MODEL`.
+- If the configured provider fails, the router tries the mock provider.
+- Request logs currently include the HTTP method, path, and elapsed time.
+
+## Requirements
+
+- Go 1.22 or newer
+- PowerShell on Windows for the demo commands below (or adapt them for your
+  shell)
+
+There are no third-party Go module dependencies in the current `go.mod`.
+
+## Run it locally
+
+Open a terminal in the project folder. These commands start the server on
+loopback only and use the mock provider, so they do not call an external AI
+service or need an AI API key:
+
+```powershell
+$env:GATEWAY_ADDR = "127.0.0.1:8080"
+$env:GATEWAY_PROVIDER = "mock"
+$env:GATEWAY_API_KEY = "local-demo-key"
+$env:GATEWAY_RATE_PER_MIN = "60"
+go run ./cmd/gateway
 ```
-chatty-bot ──────────► Anthropic API
-somasmart  ──────────► Anthropic API     (each app holds the real API key)
-kariba     ──────────► OpenAI API
+
+Keep that terminal open. In a **second** PowerShell terminal, check health:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8080/healthz" -Method Get
 ```
 
-With a gateway, the apps talk to *you*, and only the gateway holds provider keys:
+Then send a chat request:
 
+```powershell
+$payload = @{
+    model = "default"
+    messages = @(
+        @{ role = "user"; content = "Hello from my app" }
+    )
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8080/v1/chat" `
+    -Method Post `
+    -Headers @{ Authorization = "Bearer local-demo-key" } `
+    -ContentType "application/json" `
+    -Body $payload
 ```
-chatty-bot ─┐                         ┌──► Anthropic
-somasmart  ─┼──► ai-gateway (Go) ─────┼──► OpenAI-compatible
-kariba     ─┘   auth · limits · logs  ├──► Ollama (local, free)
-                                      └──► mock (no key, no cost)
-```
 
-## 2. How we will use it
+The chat response should include a mock reply such as `Mock reply: Hello from
+my app`. The health route does not require the gateway key; the chat route does.
+Stop the server with **Ctrl+C** in its terminal.
 
-- **Chatty WhatsApp bot:** instead of calling Anthropic directly, the bot calls `POST /v1/chat` on the gateway with its own gateway key. When your credits run out, the gateway can fall back to a local model or the mock instead of the bot crashing.
-- **SomaSmart:** a future "explain this answer" feature calls the gateway, so limits and spend are controlled in one place, per app.
-- **Learning:** it is a practical way to learn Go's real strengths: concurrency, `context`, HTTP servers, streaming, testing, and small static binaries.
+If you prefer `.env` configuration, copy `.env.example` to `.env` only if you
+do not already have a local `.env`, then edit the values. The application loads
+`.env` from its current working directory, and environment variables already
+set in the process take precedence. `.env` is ignored by Git.
 
-## 3. Advantages (and honest limits)
+## Configuration
 
-| Advantage | Why it matters |
-|---|---|
-| **Real keys live in one place** | Apps get revocable gateway keys. A leaked bot key doesn't expose your provider account. |
-| **Swap providers without touching apps** | Change one config line, not three codebases. |
-| **Rate limits and spend control** | A bug or abuse in one app can't drain your credits. |
-| **Fallback and retries** | Provider down or out of credit? Try the next one. |
-| **One log and one set of metrics** | See who called what, how slow, how often it failed. |
-| **Works with no credits** | The mock and Ollama providers let you build and test for free. |
-
-Limits: it adds one extra network hop; it is a single process (no clustering); it is a learning project, not a hardened product. See *Security notes* below.
-
----
-
-## 4. Scope, in milestones
-
-Each milestone ends with something that runs and has tests. Stop after any of them and you still have a working tool.
-
-| # | Milestone | You learn |
+| Variable | Default | Description |
 |---|---|---|
-| **M1** | HTTP server with `GET /healthz` and `POST /v1/chat` forwarding to the **mock** provider | `net/http`, JSON, project layout, first test |
-| **M2** | Real provider adapter behind a `Provider` interface (Anthropic and/or OpenAI-compatible/Ollama) | interfaces, HTTP clients, timeouts, `context` |
-| **M3** | Gateway API keys (stored hashed), auth middleware | middleware, constant-time compare, hashing |
-| **M4** | Per-key rate limiting (token bucket) | goroutine-safe state, `sync`, table-driven tests |
-| **M5** | Streaming responses (Server-Sent Events) | `http.Flusher`, streaming, cancellation |
-| **M6** | Retries and fallback between providers | error handling, backoff, circuit-breaker idea |
-| **M7** | Structured logs, request IDs, simple `/metrics` | `log/slog`, observability |
-| **M8** | Dockerfile, Makefile, GitHub Actions CI | multi-stage builds, CI for Go |
+| `GATEWAY_ADDR` | `:8080` | HTTP listen address. Use `127.0.0.1:8080` for local-only access. |
+| `GATEWAY_PROVIDER` | `mock` | `mock`, `openai`, or `ollama`. The latter two use the same OpenAI-compatible adapter. |
+| `GATEWAY_API_KEY` | `dev-gateway-key-change-me` | Shared bearer token required by `POST /v1/chat`. Set a private value for local use. An empty value disables this check. |
+| `GATEWAY_RATE_PER_MIN` | `60` | Configures the in-memory limiter's capacity. See the prototype limitations below. |
+| `GATEWAY_MODEL` | `default` | Model name passed to the provider when the request omits `model`. |
+| `OPENAI_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible API base URL; this is the usual local Ollama URL. |
+| `OPENAI_API_KEY` | empty | Optional upstream bearer key; leave empty for a local Ollama instance if appropriate. |
 
-**Out of scope for now:** a web dashboard, billing, multi-user admin UI, response caching, clustering. Add later only if a real need shows up.
+For Ollama, start Ollama and make sure the configured model is available there,
+then set `GATEWAY_PROVIDER=ollama` and `GATEWAY_MODEL` to that model's name.
+For another OpenAI-compatible service, set its base URL and upstream key as
+needed. Keep upstream credentials in environment variables or an untracked
+`.env` file, never in source control.
 
-### API sketch (M1–M3)
+## API
 
-```
-GET  /healthz                      -> {"status":"ok"}
-POST /v1/chat                      Authorization: Bearer <gateway-key>
-     { "model": "default", "messages": [{"role":"user","content":"hi"}] }
-  -> { "id": "...", "provider": "mock", "content": "...", "usage": {"input_tokens": 3, "output_tokens": 9} }
-```
+### Health
 
-The gateway uses its **own simple request/response shape**. Each provider adapter translates to and from it, which is the whole point of the `Provider` interface.
-
----
-
-## 5. Project structure
-
-```
-ai-gateway/
-├── cmd/
-│   └── gateway/
-│       └── main.go              # wiring only: load config, build server, handle shutdown
-├── internal/
-│   ├── config/                  # read environment variables, validate, fail fast
-│   ├── server/                  # routes, handlers, middleware chain
-│   │   ├── server.go
-│   │   ├── handlers.go
-│   │   └── middleware.go        # request ID, logging, auth, rate limit, panic recovery
-│   ├── auth/                    # gateway keys: generate, hash, verify, store
-│   ├── ratelimit/               # token bucket per key
-│   ├── provider/                # the Provider interface + adapters
-│   │   ├── provider.go          # interface and shared types
-│   │   ├── mock.go              # no network, no key, deterministic
-│   │   ├── openai_compat.go     # OpenAI-style APIs and Ollama
-│   │   ├── anthropic.go         # Anthropic Messages API
-│   │   └── router.go            # choose a provider, retries, fallback (M6)
-│   └── observability/           # slog setup, metrics counters
-├── docs/
-│   └── decisions.md             # short notes: why you chose X over Y (great for interviews)
-├── .github/workflows/ci.yml     # go vet, go test -race, build
-├── .env.example                 # documented settings, no real secrets
-├── .gitignore                   # .env, bin/, *.db
-├── Dockerfile                   # multi-stage, non-root, small final image
-├── Makefile                     # run, test, lint, build, docker
-├── go.mod
-└── README.md
+```http
+GET /healthz
 ```
 
-**Why `internal/`?** Go refuses to let other modules import it, so you can reorganise freely without breaking anyone. **Why a thin `main.go`?** So the real logic is testable without starting a process.
+Example response:
 
-The core abstraction (the one thing to get right early):
+```json
+{"status":"ok"}
+```
 
-```go
-// internal/provider/provider.go  (sketch, not final code)
-type Provider interface {
-    Name() string
-    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
-    // M5 adds: ChatStream(ctx, req) (<-chan Chunk, error)
+### Chat
+
+```http
+POST /v1/chat
+Authorization: Bearer local-demo-key
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "model": "default",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
 }
 ```
 
----
+Response shape:
 
-## 6. Requirements
+```json
+{
+  "id": "mock-1",
+  "provider": "mock",
+  "content": "Mock reply: Hello",
+  "usage": {
+    "input_tokens": 3,
+    "output_tokens": 9
+  }
+}
+```
 
-**You need**
-- **Go 1.22 or newer** (`go version`). Needed for the improved `http.ServeMux` patterns like `mux.HandleFunc("POST /v1/chat", ...)`, so we can avoid a router dependency.
-- **Git** and a GitHub account (for CI).
-- **A terminal and VS Code** with the official Go extension (installs `gopls`, the formatter and the debugger).
+The `usage` values in mock responses are fixed demo values, not measured token
+counts.
 
-**You do not need (important)**
-- **No provider API key or credits to start.** M1 uses the mock; Ollama (optional) gives a free local model for M2.
-- **No database for M1–M2.** Keys can live in a small file or in memory at first; add SQLite later if you want persistence.
+## Test and build
 
-**Optional**
-- **Docker** for M8.
-- **Ollama** with a small model, for a free real-model test.
-- **`make`** (or just run the commands by hand).
+From the project folder:
 
-**Dependencies:** the plan is **standard library only** for M1–M7: `net/http`, `encoding/json`, `log/slog`, `context`, `sync`, `crypto/sha256`, `crypto/subtle`. Fewer dependencies means more Go learned. If you decide to skip hand-writing the limiter, `golang.org/x/time/rate` is the one acceptable extra.
+```powershell
+go test ./...
+go vet ./...
+go build ./cmd/gateway
+```
 
-**Configuration (environment variables)**
+The existing tests cover the health and chat handlers (including gateway-key
+checking and mock responses) and the OpenAI-compatible adapter's request
+translation and response parsing. They use Go's `httptest` package, so they do
+not need a running gateway or real provider credentials.
 
-| Variable | Purpose | Example |
-|---|---|---|
-| `GATEWAY_ADDR` | listen address | `:8080` |
-| `GATEWAY_PROVIDER` | default provider | `mock` |
-| `ANTHROPIC_API_KEY` | only if using Anthropic | (unset until you have credits) |
-| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | OpenAI-compatible or Ollama | `http://localhost:11434/v1` |
-| `GATEWAY_RATE_PER_MIN` | default rate limit per key | `60` |
+## Startup flow and layout
 
----
+When you run `go run ./cmd/gateway`, `main` loads `.env` and process
+configuration, validates it, chooses a provider, builds the HTTP routes and
+middleware, then starts listening on `GATEWAY_ADDR`.
 
-## 7. Security notes (decide these before coding)
+```text
+cmd/gateway/main.go             startup and dependency wiring
+internal/config/config.go       .env and environment-variable configuration
+internal/provider/              provider interface, mock, adapter, fallback router
+internal/server/                routes, HTTP handlers, auth, logging, rate limit
+```
 
-- **Never commit provider keys.** `.env` is git-ignored; CI uses throwaway values.
-- **Store gateway keys hashed** (SHA-256 is fine for high-entropy random keys); compare with `crypto/subtle`.
-- **Do not log prompts or responses by default.** They can contain personal data. Log metadata (key id, provider, latency, token counts, status).
-- **Set timeouts everywhere:** server read/write timeouts, client timeouts, and a `context` deadline per request. A hung upstream must not hang your server.
-- **Limit request body size** (`http.MaxBytesReader`).
-- **Bind to localhost** unless you deliberately expose it, and put it behind HTTPS (a reverse proxy) before any public use.
+## Prototype limitations and safety
 
-## 8. Definition of done (for the whole project)
+- The gateway key is one shared value, not separate keys per application; there
+  is no key issuance, hashing/storage, or revocation flow.
+- The limiter is in memory and shared by all requests in the process. Its
+  current implementation refills its full capacity after roughly one second,
+  so `GATEWAY_RATE_PER_MIN` should **not** be treated as a reliable per-minute
+  or per-client quota.
+- The mock fallback can make an upstream outage look like a successful chat
+  response. Check the returned `provider` field when evaluating a real provider.
+- The server does not yet configure production-grade HTTP server timeouts,
+  request-body limits, TLS, or graceful shutdown.
+- Logging is basic and there is no metrics endpoint or streaming API.
 
-- `make test` passes with the race detector on (`go test -race ./...`)
-- Works end to end against the mock with zero credentials
-- One real provider adapter tested (Ollama or Anthropic)
-- A key can be revoked, and a rate-limited key gets `429` with `Retry-After`
-- CI is green on GitHub, Docker image builds, README quick-start works from a clean clone
-- `docs/decisions.md` has 5+ short entries you can explain out loud
-
-## 9. Suggested first session (about 1 hour)
-
-1. `mkdir ai-gateway && cd ai-gateway && go mod init github.com/<you>/ai-gateway`
-2. Create the folders from section 5 (empty is fine) and the `.gitignore`.
-3. **Write M1 yourself:** `/healthz`, then `/v1/chat` returning a fixed mock reply.
-4. Write **one test** with `httptest` for `/healthz`.
-5. Commit. Then ask your AI to review it, not write it.
+Keep it bound to loopback for local experiments. Do not expose it to the
+internet or put real user traffic through it without adding appropriate
+authentication, rate limiting, timeouts, input limits, and HTTPS.
